@@ -1,0 +1,16 @@
+.env
+*.log
+data/raw/
+data/final/
+__pycache__/
+.pytest_cache/
+venv/
+.venv/
+.DS_Store
+*.db
+*.sqlite
+htmlcov/
+.coverage
+dist/
+build/
+*.egg-info/
