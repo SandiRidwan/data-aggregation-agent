@@ -10,8 +10,8 @@ playwright==1.44.0
 playwright-stealth==1.0.6
 
 # ─── PDF extraction ──────────────────────────────────────────────────────────
-pymupdf==1.25.5            # Primary PDF parser
-pymupdf==1.24.5               # Fallback for scanned/complex PDFs (fitz)
+pdfplumber==0.11.0            # Primary PDF parser
+pymupdf==1.25.5               # Fallback for scanned/complex PDFs (fitz)
 
 # ─── Data ────────────────────────────────────────────────────────────────────
 pandas==2.2.2
