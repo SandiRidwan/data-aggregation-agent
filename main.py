@@ -153,7 +153,14 @@ def step_scrape(stats: PipelineStats) -> list[dict]:
     for scraper in scrapers:
         name = scraper.__class__.__name__
         try:
-            records = scraper.scrape()
+            result = scraper.scrape()
+            # scraper.scrape() returns ScrapeResult object — extract .records
+            if hasattr(result, "records"):
+                records = result.records
+            elif isinstance(result, list):
+                records = result
+            else:
+                records = list(result)
             all_records.extend(records)
             stats.sources_hit += 1
             logger.info("✅ %s → %d records", name, len(records))
