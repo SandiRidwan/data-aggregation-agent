@@ -28,9 +28,9 @@ logger = logging.getLogger(__name__)
 # Add real feed URLs here. One scraper handles all of them.
 
 FEED_URLS = [
-    os.getenv("SOURCE_04_FEED_1", "https://feeds.feedburner.com/example1"),
-    os.getenv("SOURCE_04_FEED_2", "https://example.com/rss.xml"),
-    os.getenv("SOURCE_04_FEED_3", "https://example.org/feed/atom"),
+    os.getenv("SOURCE_04_FEED_1", "https://feeds.bbci.co.uk/news/technology/rss.xml"),
+    os.getenv("SOURCE_04_FEED_2", "https://techcrunch.com/feed/"),
+    os.getenv("SOURCE_04_FEED_3", "https://hnrss.org/frontpage"),
 ]
 
 MAX_ENTRIES_PER_FEED = int(os.getenv("SOURCE_04_MAX_ENTRIES", "50"))
