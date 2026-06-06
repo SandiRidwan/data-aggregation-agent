@@ -1,7 +1,7 @@
 # ─── Core scraping ───────────────────────────────────────────────────────────
 requests==2.32.3
 curl_cffi==0.7.4              # TLS fingerprint bypass (JA3) — use if site blocks requests
-httpx==0.27.2                 # Async-friendly HTTP client
+httpx[http2]==0.27.2                 # Async-friendly HTTP client
 beautifulsoup4==4.12.3
 lxml==5.2.2
 
@@ -10,7 +10,7 @@ playwright==1.44.0
 playwright-stealth==1.0.6
 
 # ─── PDF extraction ──────────────────────────────────────────────────────────
-pdfplumber==0.11.0            # Primary PDF parser
+pymupdf==1.25.5            # Primary PDF parser
 pymupdf==1.24.5               # Fallback for scanned/complex PDFs (fitz)
 
 # ─── Data ────────────────────────────────────────────────────────────────────
