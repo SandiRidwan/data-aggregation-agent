@@ -1,5 +1,5 @@
 """
-airtable_sync.py — Airtable sync with score-based routing
+airtable_sync.py — Airtable sync with score-based routing + ghost row cleaner
 
 Routing logic (default — update when client confirms):
   score >= 7.0  → TABLE_A (high fit)
@@ -88,7 +88,6 @@ class AirtableRecord:
         if self.scraped_at:
             fields["Scraped At"] = self.scraped_at
         if self.extra:
-            # Flatten extra as JSON string — Airtable has no nested field type
             import json
             fields["Extra"] = json.dumps(self.extra)
         return fields
@@ -138,7 +137,7 @@ class RoutingEngine:
 class AirtableClient:
     """
     Thin wrapper around Airtable REST API.
-    Supports list, create (upsert by Source ID).
+    Supports list, create, update, delete (upsert by Source ID).
     """
 
     def __init__(self, token: str, base_id: str, session: Optional[requests.Session] = None):
@@ -160,7 +159,7 @@ class AirtableClient:
 
     def list_records(self, table_name: str, filter_formula: str = "") -> list[dict]:
         """Fetch all records from a table (handles pagination)."""
-        url = self._table_url(table_name)
+        url    = self._table_url(table_name)
         params: dict[str, str] = {}
         if filter_formula:
             params["filterByFormula"] = filter_formula
@@ -184,27 +183,33 @@ class AirtableClient:
 
     def create_record(self, table_name: str, fields: dict) -> dict:
         """Create a single record. Returns created record dict."""
-        url = self._table_url(table_name)
+        url  = self._table_url(table_name)
         resp = self._session.post(url, json={"fields": fields}, timeout=15)
         resp.raise_for_status()
         return resp.json()
 
     def update_record(self, table_name: str, record_id: str, fields: dict) -> dict:
         """Update a single record by Airtable record ID."""
-        url = f"{self._table_url(table_name)}/{record_id}"
+        url  = f"{self._table_url(table_name)}/{record_id}"
         resp = self._session.patch(url, json={"fields": fields}, timeout=15)
         resp.raise_for_status()
         return resp.json()
+
+    def delete_record(self, table_name: str, record_id: str) -> bool:
+        """Delete a single record by Airtable record ID. Returns True on success."""
+        url  = f"{self._table_url(table_name)}/{record_id}"
+        resp = self._session.delete(url, timeout=15)
+        resp.raise_for_status()
+        return resp.json().get("deleted", False)
 
     def upsert_record(self, table_name: str, record: AirtableRecord) -> tuple[str, str]:
         """
         Upsert a record by Source ID.
         Returns (action, airtable_record_id) where action is 'created' or 'updated'.
         """
-        formula = f"{{Source ID}}='{record.source_id}'"
+        formula  = f"{{Source ID}}='{record.source_id}'"
         existing = self.list_records(table_name, filter_formula=formula)
-
-        fields = record.to_airtable_fields()
+        fields   = record.to_airtable_fields()
 
         if existing:
             airtable_id = existing[0]["id"]
@@ -212,7 +217,7 @@ class AirtableClient:
             logger.debug("upsert: updated %s in %s", record.source_id, table_name)
             return "updated", airtable_id
         else:
-            created = self.create_record(table_name, fields)
+            created     = self.create_record(table_name, fields)
             airtable_id = created["id"]
             logger.debug("upsert: created %s in %s", record.source_id, table_name)
             return "created", airtable_id
@@ -227,7 +232,7 @@ class SyncResult:
     created: int = 0
     updated: int = 0
     skipped: int = 0
-    errors: int = 0
+    errors:  int = 0
     dry_run: bool = False
 
     def __str__(self) -> str:
@@ -263,17 +268,14 @@ def sync_to_airtable(
     """
     is_dry_run = dry_run if dry_run is not None else _DRY_RUN
 
-    # Build client from env if not provided
     if client is None:
-        token = os.getenv("AIRTABLE_TOKEN", "")
+        token   = os.getenv("AIRTABLE_TOKEN", "")
         base_id = os.getenv("AIRTABLE_BASE_ID", "")
         if is_dry_run:
-            # In dry run: use a mock client that records calls without HTTP
             client = _make_dry_run_client(token or "dry_run", base_id or "dry_run")
         else:
             client = AirtableClient(token=token, base_id=base_id)
 
-    # Build routing engine from env if not provided
     if routing_engine is None:
         routing_engine = RoutingEngine(
             table_a=os.getenv("AIRTABLE_TABLE_A", "High Fit"),
@@ -283,9 +285,7 @@ def sync_to_airtable(
             threshold_medium=_get_threshold_medium(),
         )
 
-    # Route all records
     routing_engine.route_all(records)
-
     result = SyncResult(dry_run=is_dry_run)
 
     for rec in records:
@@ -297,11 +297,9 @@ def sync_to_airtable(
         if is_dry_run:
             logger.info(
                 "[DRY RUN] Would upsert '%s' (score=%.2f) → %s",
-                rec.title,
-                rec.score,
-                rec.target_table,
+                rec.title, rec.score, rec.target_table,
             )
-            result.created += 1  # count as would-be created in dry run
+            result.created += 1
             continue
 
         try:
@@ -311,23 +309,106 @@ def sync_to_airtable(
             else:
                 result.updated += 1
         except requests.HTTPError as exc:
-            logger.error(
-                "HTTP error syncing %s to %s: %s",
-                rec.source_id,
-                rec.target_table,
-                exc,
-            )
+            logger.error("HTTP error syncing %s to %s: %s", rec.source_id, rec.target_table, exc)
             result.errors += 1
         except Exception as exc:  # noqa: BLE001
-            logger.error(
-                "Unexpected error syncing %s: %s",
-                rec.source_id,
-                exc,
-            )
+            logger.error("Unexpected error syncing %s: %s", rec.source_id, exc)
             result.errors += 1
 
     logger.info("Sync complete: %s", result)
     return result
+
+
+# ---------------------------------------------------------------------------
+# Ghost row cleaner
+# ---------------------------------------------------------------------------
+
+def clean_empty_rows(
+    client: Optional[AirtableClient] = None,
+    table_names: Optional[list[str]] = None,
+    dry_run: Optional[bool] = None,
+) -> dict[str, int]:
+    """
+    Delete empty rows (rows without Source ID) from all Airtable tables.
+
+    Ghost rows appear because:
+    - Airtable creates 3 empty default rows on every new table
+    - Previous pipeline runs that had scoring failures left rows with no Source ID
+
+    Args:
+        client: AirtableClient instance. If None, built from env vars.
+        table_names: Tables to clean. If None, uses all 3 tables from env vars.
+        dry_run: Override DRY_RUN env var.
+
+    Returns:
+        Dict mapping table_name → number of rows deleted.
+    """
+    is_dry_run = dry_run if dry_run is not None else (
+        os.getenv("DRY_RUN", "false").lower() == "true"
+    )
+
+    if client is None:
+        token   = os.getenv("AIRTABLE_TOKEN", "")
+        base_id = os.getenv("AIRTABLE_BASE_ID", "")
+        client  = AirtableClient(token=token, base_id=base_id)
+
+    if table_names is None:
+        table_names = [
+            os.getenv("AIRTABLE_TABLE_A", "High Fit"),
+            os.getenv("AIRTABLE_TABLE_B", "Medium Fit"),
+            os.getenv("AIRTABLE_TABLE_C", "Low Fit"),
+        ]
+
+    results: dict[str, int] = {}
+
+    for table_name in table_names:
+        try:
+            all_records = client.list_records(table_name)
+
+            # Empty row = row with no Source ID value
+            empty_records = [
+                rec for rec in all_records
+                if not str(rec.get("fields", {}).get("Source ID", "")).strip()
+            ]
+
+            if not empty_records:
+                logger.info("✅ %s: no empty rows to clean", table_name)
+                results[table_name] = 0
+                continue
+
+            if is_dry_run:
+                logger.info(
+                    "[DRY RUN] Would delete %d empty rows from %s",
+                    len(empty_records), table_name,
+                )
+                results[table_name] = len(empty_records)
+                continue
+
+            deleted = 0
+            for rec in empty_records:
+                try:
+                    client.delete_record(table_name, rec["id"])
+                    deleted += 1
+                except Exception as exc:
+                    logger.warning(
+                        "Failed to delete row %s from %s: %s",
+                        rec.get("id"), table_name, exc,
+                    )
+
+            logger.info("🧹 %s: deleted %d empty rows", table_name, deleted)
+            results[table_name] = deleted
+
+        except Exception as exc:
+            logger.error("Error cleaning table %s: %s", table_name, exc)
+            results[table_name] = 0
+
+    total = sum(results.values())
+    if total > 0:
+        logger.info("🧹 Airtable clean complete: %d total empty rows removed", total)
+    else:
+        logger.info("✅ Airtable clean complete: all tables already clean")
+
+    return results
 
 
 # ---------------------------------------------------------------------------
@@ -339,13 +420,11 @@ def _make_dry_run_client(token: str, base_id: str) -> AirtableClient:
     mock_session = MagicMock(spec=requests.Session)
     mock_session.headers = {}
 
-    # list_records → return empty (simulate no existing records)
     mock_response = MagicMock()
     mock_response.json.return_value = {"records": []}
     mock_response.raise_for_status.return_value = None
     mock_session.get.return_value = mock_response
 
-    # create_record → return fake created record
     create_response = MagicMock()
     create_response.json.return_value = {"id": "rec_dry_run_000", "fields": {}}
     create_response.raise_for_status.return_value = None

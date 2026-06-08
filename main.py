@@ -6,7 +6,8 @@ Orchestrates the full data aggregation pipeline:
   2. Score records via Groq LLM (scoring.py)
   3. Store to PostgreSQL (storage.py)
   4. Sync to Airtable (airtable_sync.py)
-  5. Send email digest (digest.py)
+  4b. Clean empty/ghost rows from Airtable tables
+  5. Send email digest via SendGrid (digest.py)
 
 Scheduling:
   - Default: daily at 08:00 UTC (configurable via CRON_HOUR / CRON_MINUTE)
@@ -20,6 +21,8 @@ Environment variables:
   RUN_ONCE         — run pipeline once then exit (default: false)
   SENTRY_DSN       — optional Sentry error tracking
   LOG_LEVEL        — DEBUG / INFO / WARNING (default: INFO)
+  SENDGRID_API_KEY — SendGrid API key for email digest (Railway-compatible)
+  SENDGRID_FROM    — verified sender email in SendGrid
 """
 
 from __future__ import annotations
@@ -73,6 +76,7 @@ from src.airtable_sync import (
     AirtableRecord,
     build_routing_engine_from_env,
     sync_to_airtable,
+    clean_empty_rows,              # ← NEW: ghost row cleaner
 )
 from src.digest import DigestPayload, DigestRecord, send_digest
 
@@ -101,21 +105,22 @@ CRON_MINUTE = int(os.getenv("CRON_MINUTE", "0"))
 
 class PipelineStats:
     def __init__(self, run_id: str):
-        self.run_id         = run_id
-        self.started_at     = datetime.now(timezone.utc)
-        self.sources_hit    = 0
-        self.records_scraped = 0
-        self.records_scored  = 0
-        self.records_new     = 0
-        self.records_updated = 0
-        self.records_high    = 0
-        self.records_medium  = 0
-        self.records_low     = 0
+        self.run_id          = run_id
+        self.started_at      = datetime.now(timezone.utc)
+        self.sources_hit     = 0
+        self.records_scraped  = 0
+        self.records_scored   = 0
+        self.records_new      = 0
+        self.records_updated  = 0
+        self.records_high     = 0
+        self.records_medium   = 0
+        self.records_low      = 0
         self.airtable_created = 0
         self.airtable_updated = 0
-        self.digest_sent     = False
+        self.airtable_cleaned = 0          # ← NEW: ghost rows removed
+        self.digest_sent      = False
         self.errors: list[str] = []
-        self.status          = "running"
+        self.status           = "running"
 
     def to_storage_dict(self) -> dict:
         return {
@@ -190,7 +195,6 @@ def step_score(records: list[dict], stats: PipelineStats) -> list[dict]:
         scored = score_batch(records)
         stats.records_scored = len(scored)
 
-        # Count tiers
         for rec in scored:
             tier = rec.get("fit_tier", "LOW")
             if tier == "HIGH":
@@ -235,7 +239,6 @@ def step_airtable(scored: list[dict], stats: PipelineStats) -> None:
     if not scored:
         return
 
-    # Convert pipeline dicts → AirtableRecord objects
     at_records: list[AirtableRecord] = []
     for rec in scored:
         source_id = rec.get("url") or rec.get("source_id") or str(uuid.uuid4())
@@ -268,13 +271,38 @@ def step_airtable(scored: list[dict], stats: PipelineStats) -> None:
         stats.errors.append(msg)
 
 
+def step_clean_airtable(stats: PipelineStats) -> None:
+    """
+    Remove ghost empty rows from all Airtable tables after each sync.
+
+    Ghost rows come from:
+    - Airtable's 3 default empty rows on table creation
+    - Records with no Source ID from failed scoring runs
+
+    Non-critical — failure is logged as warning, not added to stats.errors.
+    """
+    if DRY_RUN:
+        logger.info("[DRY RUN] Would clean empty rows from Airtable tables")
+        return
+    try:
+        results = clean_empty_rows()
+        total   = sum(results.values())
+        stats.airtable_cleaned = total
+        if total > 0:
+            logger.info("🧹 Airtable cleanup: removed %d empty rows %s", total, results)
+        else:
+            logger.info("✅ Airtable tables clean — no empty rows found")
+    except Exception as exc:
+        # Non-critical — don't fail the pipeline over cleanup
+        logger.warning("⚠️  Airtable cleanup skipped: %s", exc)
+
+
 def step_digest(scored: list[dict], stats: PipelineStats) -> None:
-    """Build and send email digest."""
+    """Build and send email digest via SendGrid (primary) or SMTP (fallback)."""
     if not scored:
         logger.info("No records — skipping digest")
         return
 
-    # Convert to DigestRecord, map fit_tier → digest tier label
     tier_map = {"HIGH": "High Fit", "MEDIUM": "Medium Fit", "LOW": "Low Fit"}
     digest_records = [
         DigestRecord(
@@ -322,7 +350,6 @@ def run_pipeline() -> PipelineStats:
     logger.info("Pipeline start — run_id=%s  DRY_RUN=%s", run_id, DRY_RUN)
     logger.info("=" * 60)
 
-    # Log run start (skip in dry run to avoid needing real DB)
     if not DRY_RUN:
         try:
             log_run_start(run_id)
@@ -339,10 +366,13 @@ def run_pipeline() -> PipelineStats:
         # Step 3 — Store
         step_store(scored, stats)
 
-        # Step 4 — Airtable
+        # Step 4 — Airtable sync
         step_airtable(scored, stats)
 
-        # Step 5 — Digest
+        # Step 4b — Clean ghost empty rows from Airtable
+        step_clean_airtable(stats)
+
+        # Step 5 — Email digest
         step_digest(scored, stats)
 
         stats.status = "done" if not stats.errors else "done_with_errors"
@@ -361,10 +391,12 @@ def run_pipeline() -> PipelineStats:
     finally:
         elapsed = (datetime.now(timezone.utc) - stats.started_at).total_seconds()
         logger.info(
-            "Pipeline %s in %.1fs — scraped=%d scored=%d high=%d medium=%d low=%d errors=%d",
+            "Pipeline %s in %.1fs — scraped=%d scored=%d high=%d medium=%d low=%d "
+            "airtable_cleaned=%d errors=%d",
             stats.status, elapsed,
             stats.records_scraped, stats.records_scored,
             stats.records_high, stats.records_medium, stats.records_low,
+            stats.airtable_cleaned,
             len(stats.errors),
         )
 
@@ -396,7 +428,7 @@ def start_scheduler() -> None:
         trigger=CronTrigger(hour=CRON_HOUR, minute=CRON_MINUTE),
         id="daily_pipeline",
         name=f"Daily pipeline @ {CRON_HOUR:02d}:{CRON_MINUTE:02d} UTC",
-        misfire_grace_time=300,  # 5 min grace if job misfires
+        misfire_grace_time=300,
     )
 
     logger.info(

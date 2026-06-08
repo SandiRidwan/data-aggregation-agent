@@ -1,19 +1,26 @@
 """
-digest.py — Daily email digest via SMTP
+digest.py — Daily email digest via SendGrid API (primary) + SMTP (fallback)
 
-Builds an HTML + plain-text email summarising today's scored records,
-grouped by routing tier (High Fit / Medium Fit / Low Fit), and sends
-it via SMTP with TLS (port 587) or SSL (port 465).
+Railway blocks ALL outbound SMTP ports (587 AND 465) at network level.
+Fix: Use SendGrid HTTP API (port 443 — never blocked) as primary sender.
+SMTP kept as fallback for local dev only.
+
+Priority order:
+  1. SendGrid API — if SENDGRID_API_KEY is set (Railway-compatible, port 443)
+  2. SMTP fallback — if SENDGRID_API_KEY not set (local dev only)
+  3. DRY_RUN — log only, no send
 
 Environment variables:
-  SMTP_HOST        — e.g. smtp.gmail.com
-  SMTP_PORT        — 587 (STARTTLS, default) or 465 (SSL)
-  SMTP_USER        — sender email address
-  SMTP_PASSWORD    — app password (Gmail) or SMTP password
-  DIGEST_FROM      — override sender display name (optional)
-  DIGEST_TO        — comma-separated recipient addresses
-  DIGEST_SUBJECT   — override default subject (optional)
-  DRY_RUN          — if "true", build email but do not send (log only)
+  SENDGRID_API_KEY  — SendGrid API key (get free at sendgrid.com, 100/day free)
+  SENDGRID_FROM     — verified sender email in SendGrid (must match verified sender)
+  SMTP_HOST         — fallback only: e.g. smtp.gmail.com
+  SMTP_PORT         — fallback only: 587 or 465
+  SMTP_USER         — fallback only: sender email
+  SMTP_PASSWORD     — fallback only: app password
+  DIGEST_FROM       — override sender display name (optional)
+  DIGEST_TO         — comma-separated recipient addresses
+  DIGEST_SUBJECT    — override default subject (optional)
+  DRY_RUN           — if "true", build email but do not send (log only)
 """
 
 from __future__ import annotations
@@ -76,7 +83,7 @@ class DigestPayload:
 
 
 # ---------------------------------------------------------------------------
-# SMTP config
+# SMTP config (fallback — local dev only)
 # ---------------------------------------------------------------------------
 
 @dataclass
@@ -104,7 +111,7 @@ class SMTPConfig:
 
 
 # ---------------------------------------------------------------------------
-# Email builder
+# Email builder (HTML + plaintext — shared by both senders)
 # ---------------------------------------------------------------------------
 
 def _tier_color(tier: str) -> str:
@@ -199,7 +206,6 @@ def build_plaintext(payload: DigestPayload) -> str:
         f"Total records: {len(payload.records)}",
         "",
     ]
-
     for tier, records in [
         ("High Fit", payload.high()),
         ("Medium Fit", payload.medium()),
@@ -216,15 +222,13 @@ def build_plaintext(payload: DigestPayload) -> str:
             if rec.source_name:
                 lines.append(f"  via {rec.source_name}")
             lines.append("")
-
     if not any([payload.high(), payload.medium(), payload.low()]):
         lines.append("No records found in this run.")
-
     return "\n".join(lines)
 
 
 # ---------------------------------------------------------------------------
-# Email assembly
+# Email assembly (used by SMTP fallback)
 # ---------------------------------------------------------------------------
 
 def build_email(
@@ -247,33 +251,92 @@ def build_email(
     msg["Subject"] = subject
     msg["From"] = from_name
     msg["To"] = ", ".join(recipients)
-
-    # plain text first (lower preference), HTML second (higher preference)
     msg.attach(MIMEText(build_plaintext(payload), "plain", "utf-8"))
     msg.attach(MIMEText(build_html(payload), "html", "utf-8"))
-
     return msg
 
 
 # ---------------------------------------------------------------------------
-# SMTP sender
+# SendGrid sender — PRIMARY (Railway-compatible, port 443)
 # ---------------------------------------------------------------------------
 
-def send_email(
-    msg: MIMEMultipart,
-    smtp_config: SMTPConfig,
+def _send_via_sendgrid(
+    payload: DigestPayload,
     recipients: list[str],
-) -> None:
-    """Send an assembled email via SMTP. Raises on failure."""
+    subject: str,
+) -> bool:
+    """
+    Send digest via SendGrid HTTP API (port 443).
+    Railway does NOT block port 443.
+    Requires: SENDGRID_API_KEY + SENDGRID_FROM env vars.
+    """
+    try:
+        import sendgrid
+        from sendgrid.helpers.mail import Mail, Content
+    except ImportError:
+        raise ImportError(
+            "sendgrid package not installed. "
+            "Add 'sendgrid==6.11.0' to requirements.txt and redeploy."
+        )
+
+    api_key  = os.getenv("SENDGRID_API_KEY", "")
+    from_email = os.getenv("SENDGRID_FROM", os.getenv("SMTP_USER", ""))
+
+    if not api_key:
+        raise ValueError("SENDGRID_API_KEY is required")
+    if not from_email:
+        raise ValueError(
+            "SENDGRID_FROM (or SMTP_USER) must be set to your verified SendGrid sender email"
+        )
+
+    message = Mail(
+        from_email=from_email,
+        to_emails=recipients,
+        subject=subject,
+    )
+    message.add_content(Content("text/plain", build_plaintext(payload)))
+    message.add_content(Content("text/html",  build_html(payload)))
+
+    sg       = sendgrid.SendGridAPIClient(api_key=api_key)
+    response = sg.send(message)
+
+    if response.status_code in (200, 202):
+        logger.info(
+            "✅ Digest sent via SendGrid → %s (%d recipients) — HTTP %d",
+            recipients, len(recipients), response.status_code,
+        )
+        return True
+    else:
+        logger.error(
+            "SendGrid returned HTTP %d: %s",
+            response.status_code, response.body,
+        )
+        return False
+
+
+# ---------------------------------------------------------------------------
+# SMTP sender — FALLBACK (local dev only — blocked on Railway)
+# ---------------------------------------------------------------------------
+
+def _send_via_smtp(
+    payload: DigestPayload,
+    recipients: list[str],
+    subject: str,
+    smtp_config: SMTPConfig,
+) -> bool:
+    """
+    Send digest via SMTP.
+    ⚠️  Railway blocks ALL SMTP ports (587 and 465).
+    Only use for local development.
+    """
+    msg     = build_email(payload, smtp_config, recipients, subject)
     context = ssl.create_default_context()
 
     if smtp_config.use_ssl:
-        # Port 465 — direct SSL
         with smtplib.SMTP_SSL(smtp_config.host, smtp_config.port, context=context) as server:
             server.login(smtp_config.user, smtp_config.password)
             server.sendmail(smtp_config.user, recipients, msg.as_string())
     else:
-        # Port 587 — STARTTLS
         with smtplib.SMTP(smtp_config.host, smtp_config.port) as server:
             server.ehlo()
             server.starttls(context=context)
@@ -281,7 +344,8 @@ def send_email(
             server.login(smtp_config.user, smtp_config.password)
             server.sendmail(smtp_config.user, recipients, msg.as_string())
 
-    logger.info("Digest sent to %s (%d recipients)", recipients, len(recipients))
+    logger.info("✅ Digest sent via SMTP → %s (%d recipients)", recipients, len(recipients))
+    return True
 
 
 # ---------------------------------------------------------------------------
@@ -298,41 +362,64 @@ def send_digest(
     """
     Build and send (or log in dry-run) a digest email.
 
+    Sender priority:
+      1. SendGrid API  — if SENDGRID_API_KEY is set (recommended, Railway-safe)
+      2. SMTP fallback — if SENDGRID_API_KEY not set (local dev only)
+
     Returns True if sent/logged successfully, False on error.
     """
     is_dry_run = dry_run if dry_run is not None else _DRY_RUN
 
     # Resolve recipients
     if recipients is None:
-        raw = os.getenv("DIGEST_TO", "")
+        raw        = os.getenv("DIGEST_TO", "")
         recipients = [r.strip() for r in raw.split(",") if r.strip()]
     if not recipients:
         raise ValueError("DIGEST_TO env var or recipients argument is required")
 
-    # Resolve SMTP config
-    if smtp_config is None:
-        if is_dry_run:
-            smtp_config = SMTPConfig(
-                host="localhost", port=587, user="dry@run.local", password="dry_run"
-            )
-        else:
-            smtp_config = SMTPConfig.from_env()
+    # Build subject
+    resolved_subject = subject or os.getenv(
+        "DIGEST_SUBJECT",
+        f"{payload.run_label} — {payload.generated_at} ({len(payload.records)} records)",
+    )
 
-    msg = build_email(payload, smtp_config, recipients, subject)
-
+    # ── DRY RUN — log only ────────────────────────────────────────────────
     if is_dry_run:
         logger.info(
             "[DRY RUN] Would send digest to %s — subject: %s — %d records",
-            recipients,
-            msg["Subject"],
-            len(payload.records),
+            recipients, resolved_subject, len(payload.records),
         )
         logger.info("[DRY RUN] HTML preview length: %d chars", len(build_html(payload)))
         return True
 
+    # ── SENDGRID (primary) ────────────────────────────────────────────────
+    sendgrid_key = os.getenv("SENDGRID_API_KEY", "")
+    if sendgrid_key:
+        try:
+            return _send_via_sendgrid(payload, recipients, resolved_subject)
+        except ImportError as exc:
+            logger.error("SendGrid import error: %s", exc)
+            return False
+        except Exception as exc:
+            logger.error("SendGrid failed: %s — will NOT fall back to SMTP on Railway", exc)
+            return False
+
+    # ── SMTP FALLBACK (local dev only) ────────────────────────────────────
+    logger.warning(
+        "⚠️  SENDGRID_API_KEY not set — using SMTP fallback. "
+        "NOTE: Railway blocks all SMTP ports. "
+        "Set SENDGRID_API_KEY in Railway Variables to fix this."
+    )
     try:
-        send_email(msg, smtp_config, recipients)
-        return True
+        if smtp_config is None:
+            if is_dry_run:
+                smtp_config = SMTPConfig(
+                    host="localhost", port=587,
+                    user="dry@run.local", password="dry_run",
+                )
+            else:
+                smtp_config = SMTPConfig.from_env()
+        return _send_via_smtp(payload, recipients, resolved_subject, smtp_config)
     except smtplib.SMTPAuthenticationError as exc:
         logger.error("SMTP authentication failed: %s", exc)
         return False
