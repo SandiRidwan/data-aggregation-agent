@@ -40,7 +40,7 @@
 <div align="center">
 
 <a href="https://www.youtube.com/watch?v=YOUR_VIDEO_ID">
-  <img src="https://img.youtube.com/vi/YOUR_VIDEO_ID/maxresdefault.jpg" width="860" alt="Demo Video" />
+  <img src="Thumbnail.png" width="860" alt="Demo Video" />
 </a>
 
 <br/><br/>
