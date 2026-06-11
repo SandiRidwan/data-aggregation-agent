@@ -46,8 +46,14 @@
 <br/><br/>
 
 <!-- Upload GIF via GitHub Issue trick → paste link here -->
-<img src="PASTE_YOUR_GIF_LINK_HERE" width="860" alt="Pipeline Running" />
-
+<div align="center">
+  <video src="https://github.com/user-attachments/assets/9e975780-9590-4e86-a381-4481affb4617" 
+         width="860" 
+         controls 
+         autoplay 
+         loop 
+         muted>
+  </video>
 </div>
 
 ---
