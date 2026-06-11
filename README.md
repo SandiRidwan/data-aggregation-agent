@@ -38,7 +38,7 @@
 ## 🎬 Demo
 
 <div align="center">
-  <a href="https://youtube.com/watch?v=W7jRwOjInTU">
+  <a href="https://youtu.be/-jBGvlEubUU">
     <img src="Thumbnail.png" width="860" alt="Watch full demo on YouTube" />
   </a>
   <br/>
@@ -48,7 +48,7 @@
 <br/>
 
 <div align="center">
-  <video src="https://github.com/user-attachments/assets/9e975780-9590-4e86-a381-4481affb4617" 
+  <video src="https://github.com/user-attachments/assets/79a3b410-e256-46f3-9b98-ad510da37bb4" 
          width="860" 
          controls 
          autoplay 
