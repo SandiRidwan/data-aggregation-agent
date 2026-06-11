@@ -47,7 +47,7 @@
 
 <!-- Upload GIF via GitHub Issue trick → paste link here -->
 <div align="center">
-  <video src="https://github.com/user-attachments/assets/9e975780-9590-4e86-a381-4481affb4617" 
+  <video src="https://github.com/user-attachments/assets/330888c1-bb9a-4492-80c5-1de0200a4dc3" 
          width="860" 
          controls 
          autoplay 
