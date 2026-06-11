@@ -39,7 +39,7 @@
 
 <div align="center">
 
-<a href="https://www.youtube.com/watch?v=YOUR_VIDEO_ID">
+<a href="https://youtu.be/-jBGvlEubUU">
   <img src="Thumbnail.png" width="860" alt="Demo Video" />
 </a>
 
