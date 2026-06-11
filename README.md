@@ -38,16 +38,23 @@
 ## 🎬 Demo
 
 <div align="center">
+  <a href="https://youtube.com/watch?v=W7jRwOjInTU">
+    <img src="Thumbnail.png" width="860" alt="Watch full demo on YouTube" />
+  </a>
+  <br/>
+  <sub><i>Click to watch — pipeline run, Slack alerts, CSV output walkthrough</i></sub>
+</div>
 
-<a href="https://www.youtube.com/watch?v=YOUR_VIDEO_ID">
-  <img src="https://img.youtube.com/vi/YOUR_VIDEO_ID/maxresdefault.jpg" width="860" alt="Demo Video" />
-</a>
+<br/>
 
-<br/><br/>
-
-<!-- Upload GIF via GitHub Issue trick → paste link here -->
-<img src="PASTE_YOUR_GIF_LINK_HERE" width="860" alt="Pipeline Running" />
-
+<div align="center">
+  <video src="https://github.com/user-attachments/assets/9e975780-9590-4e86-a381-4481affb4617" 
+         width="860" 
+         controls 
+         autoplay 
+         loop 
+         muted>
+  </video>
 </div>
 
 ---
