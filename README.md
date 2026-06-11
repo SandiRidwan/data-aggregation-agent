@@ -39,21 +39,15 @@
 
 <div align="center">
 
-<a href="https://youtu.be/-jBGvlEubUU">
-  <img src="Thumbnail.png" width="860" alt="Demo Video" />
+<a href="https://www.youtube.com/watch?v=YOUR_VIDEO_ID">
+  <img src="https://img.youtube.com/vi/YOUR_VIDEO_ID/maxresdefault.jpg" width="860" alt="Demo Video" />
 </a>
 
 <br/><br/>
 
 <!-- Upload GIF via GitHub Issue trick → paste link here -->
-<div align="center">
-  <video src="https://github.com/user-attachments/assets/330888c1-bb9a-4492-80c5-1de0200a4dc3" 
-         width="860" 
-         controls 
-         autoplay 
-         loop 
-         muted>
-  </video>
+<img src="PASTE_YOUR_GIF_LINK_HERE" width="860" alt="Pipeline Running" />
+
 </div>
 
 ---
